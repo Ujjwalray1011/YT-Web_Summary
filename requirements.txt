@@ -7,3 +7,4 @@ validators
 youtube-transcript-api
 langchain-groq
 langchain-core
+yt-dlp
