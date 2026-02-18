@@ -1,0 +1,9 @@
+streamlit
+python-dotenv
+requests
+beautifulsoup4
+lxml
+validators
+youtube-transcript-api
+langchain-groq
+langchain-core
