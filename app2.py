@@ -20,8 +20,8 @@ load_dotenv()
 # PAGE CONFIG & GLOBAL STYLES
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Snapify — Smart Summarizer",
-    page_icon="⚡",
+    page_title="Ujjwalize — Smart Summarizer",
+    page_icon="🌟",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -258,16 +258,26 @@ st.markdown(
 # SIDEBAR
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('<div class="sidebar-logo">⚡ <span>Snap</span>ify</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-logo">🌟 <span>Ujjwal</span>ize</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">🔑 API Key</div>', unsafe_allow_html=True)
+
+    # Load key from Streamlit secrets or .env — never shown in UI by default
+    _env_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
+    if not _env_key:
+        _env_key = os.getenv("GROQ_API_KEY", "")
+
     groq_api_key = st.text_input(
         "Groq API Key",
-        value=os.getenv("GROQ_API_KEY", ""),
+        value="",                          # ← never pre-fill; keep field blank
         type="password",
         label_visibility="collapsed",
         placeholder="gsk_••••••••••••••••••••••",
     )
+
+    # Use env/secrets key silently if user left the field blank
+    if not groq_api_key.strip():
+        groq_api_key = _env_key
 
     st.markdown('<div class="sidebar-section">🌐 Output Language</div>', unsafe_allow_html=True)
     output_language = st.selectbox("Language", ["English", "Hindi"], index=0, label_visibility="collapsed")
@@ -285,7 +295,7 @@ with st.sidebar:
         '<p style="font-size:0.75rem;color:#7a7a8c;line-height:1.5;">'
         "Powered by <strong style='color:#e8714a'>Groq</strong> + "
         "<strong style='color:#e8714a'>LLaMA 3.1</strong>.<br>"
-        "Supports YouTube transcripts & public websites.</p>",
+        "Built by <strong style='color:#e8714a'>Ujjwal</strong> 🌟</p>",
         unsafe_allow_html=True,
     )
 
@@ -295,8 +305,8 @@ with st.sidebar:
 st.markdown(
     """
     <div class="hero">
-        <div class="hero-badge">⚡ AI-Powered Summarizer</div>
-        <h1>Enhance your reading with<br><span>Snapify AI</span></h1>
+        <div class="hero-badge">🌟 AI-Powered Summarizer</div>
+        <h1>Enhance your reading with<br><span>Ujjwalize AI</span></h1>
         <p>Paste any YouTube video or website URL and get a sharp, concise summary in seconds.</p>
     </div>
     """,
@@ -328,7 +338,7 @@ url = st.text_input(
 
 col_btn, col_tip = st.columns([1, 2])
 with col_btn:
-    run_btn = st.button("⚡ Summarize", type="primary")
+    run_btn = st.button("🌟 Summarize", type="primary")
 with col_tip:
     st.markdown(
         '<p class="tip-text">Static sites (Wikipedia, GFG) work best. '
@@ -601,7 +611,7 @@ if run_btn:
         st.download_button(
             "⬇️ Download Summary",
             data=final_summary,
-            file_name="snapify_summary.txt",
+            file_name="ujjwalize_summary.txt",
             mime="text/plain",
         )
 
