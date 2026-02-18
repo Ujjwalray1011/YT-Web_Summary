@@ -8,12 +8,7 @@ from dotenv import load_dotenv
 import requests
 from bs4 import BeautifulSoup
 
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import (
-    TranscriptsDisabled,
-    NoTranscriptFound,
-    CouldNotRetrieveTranscript,
-)
+import yt_dlp
 
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
@@ -34,10 +29,8 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* ── Google Fonts ── */
     @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap');
 
-    /* ── Root tokens ── */
     :root {
         --bg:        #0f0f13;
         --surface:   #17171f;
@@ -50,18 +43,15 @@ st.markdown(
         --radius:    14px;
     }
 
-    /* ── Base ── */
     html, body, [class*="css"] {
         font-family: 'DM Sans', sans-serif;
         background-color: var(--bg) !important;
         color: var(--text) !important;
     }
 
-    /* ── Hide Streamlit chrome ── */
     #MainMenu, footer, header { visibility: hidden; }
     .block-container { padding: 2.5rem 3rem 4rem !important; max-width: 900px !important; }
 
-    /* ── Hero ── */
     .hero {
         text-align: center;
         padding: 3.5rem 1rem 2rem;
@@ -99,24 +89,6 @@ st.markdown(
         line-height: 1.6;
     }
 
-    /* ── Divider ── */
-    .snap-divider {
-        border: none;
-        border-top: 1px solid var(--border);
-        margin: 2rem 0;
-    }
-
-    /* ── Card / input wrapper ── */
-    .snap-card {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 1.6rem 1.8rem;
-        margin-bottom: 1.2rem;
-        transition: border-color .2s;
-    }
-    .snap-card:hover { border-color: rgba(255,255,255,0.13); }
-
     .snap-label {
         font-family: 'Syne', sans-serif;
         font-size: 0.78rem;
@@ -127,7 +99,6 @@ st.markdown(
         margin-bottom: 0.6rem;
     }
 
-    /* ── Streamlit input overrides ── */
     .stTextInput > div > div > input,
     .stSelectbox > div > div,
     .stTextArea textarea {
@@ -146,7 +117,6 @@ st.markdown(
         outline: none !important;
     }
 
-    /* ── Primary button ── */
     .stButton > button[kind="primary"] {
         background: var(--accent) !important;
         color: #fff !important;
@@ -165,7 +135,6 @@ st.markdown(
         transform: translateY(-1px) !important;
     }
 
-    /* ── Secondary / download button ── */
     .stDownloadButton > button {
         background: var(--surface2) !important;
         color: var(--accent2) !important;
@@ -181,14 +150,12 @@ st.markdown(
         background: rgba(232,113,74,0.1) !important;
     }
 
-    /* ── Slider ── */
     .stSlider > div { padding: 0.2rem 0 !important; }
     .stSlider [data-baseweb="slider"] div[role="slider"] {
         background: var(--accent) !important;
         border-color: var(--accent) !important;
     }
 
-    /* ── Progress bar ── */
     .stProgress > div > div > div {
         background: linear-gradient(90deg, var(--accent), var(--accent2)) !important;
         border-radius: 99px !important;
@@ -198,14 +165,12 @@ st.markdown(
         border-radius: 99px !important;
     }
 
-    /* ── Alerts ── */
     .stAlert {
         border-radius: var(--radius) !important;
         border: 1px solid var(--border) !important;
         background: var(--surface2) !important;
     }
 
-    /* ── Result box ── */
     .result-box {
         background: var(--surface);
         border: 1px solid rgba(232,113,74,0.25);
@@ -226,11 +191,11 @@ st.markdown(
         border-radius: var(--radius) var(--radius) 0 0;
     }
 
-    /* ── Stats row ── */
     .stat-row {
         display: flex;
         gap: 1rem;
         margin-bottom: 1.2rem;
+        flex-wrap: wrap;
     }
     .stat-pill {
         background: var(--surface2);
@@ -242,7 +207,6 @@ st.markdown(
     }
     .stat-pill strong { color: var(--accent2); }
 
-    /* ── Sidebar ── */
     section[data-testid="stSidebar"] {
         background: var(--surface) !important;
         border-right: 1px solid var(--border) !important;
@@ -271,10 +235,8 @@ st.markdown(
         margin: 1.5rem 0 0.5rem;
     }
 
-    /* ── Spinner ── */
     .stSpinner > div { border-top-color: var(--accent) !important; }
 
-    /* ── Selectbox dropdown ── */
     [data-baseweb="select"] div {
         background: var(--surface2) !important;
         border-color: var(--border) !important;
@@ -282,12 +244,10 @@ st.markdown(
     }
     [data-baseweb="popover"] { background: var(--surface2) !important; }
 
-    /* ── Tip text ── */
     .tip-text {
         font-size: 0.8rem;
         color: var(--muted);
-        text-align: center;
-        margin-top: 0.5rem;
+        margin-top: 0.55rem;
     }
     </style>
     """,
@@ -371,8 +331,8 @@ with col_btn:
     run_btn = st.button("⚡ Summarize", type="primary")
 with col_tip:
     st.markdown(
-        '<p class="tip-text" style="text-align:left;padding-top:0.55rem;">'
-        "Static sites (Wikipedia, GFG) work best. JS-heavy pages may extract less content.</p>",
+        '<p class="tip-text">Static sites (Wikipedia, GFG) work best. '
+        "JS-heavy pages may extract less content.</p>",
         unsafe_allow_html=True,
     )
 
@@ -390,6 +350,81 @@ def get_video_id(youtube_url: str) -> str:
         if m:
             return m.group(1)
     raise ValueError("Invalid YouTube URL — could not extract video id.")
+
+
+def clean_vtt(vtt_text: str) -> str:
+    """Strip VTT timestamps and HTML tags, return clean plain text."""
+    lines = vtt_text.splitlines()
+    cleaned = []
+    for line in lines:
+        line = line.strip()
+        # Skip blank lines, headers, timestamps, notes
+        if not line or line.startswith("WEBVTT") or "-->" in line or line.startswith("NOTE"):
+            continue
+        # Remove timestamp tags like <00:00:01.000>
+        line = re.sub(r"<\d+:\d+:\d+\.\d+>", "", line)
+        # Remove other HTML-style tags like <c>, </c>
+        line = re.sub(r"<[^>]+>", "", line).strip()
+        # Skip pure number lines (cue identifiers)
+        if re.fullmatch(r"\d+", line):
+            continue
+        # Deduplicate consecutive identical lines (very common in auto-captions)
+        if line and (not cleaned or cleaned[-1] != line):
+            cleaned.append(line)
+    return "\n".join(cleaned)
+
+
+def load_youtube_transcript(youtube_url: str, prefer_lang: str = "en") -> str:
+    """
+    Fetch YouTube transcript using yt-dlp.
+    Works reliably on cloud servers (Streamlit Cloud, Heroku, etc.)
+    unlike youtube-transcript-api which gets IP-blocked on cloud.
+    """
+    lang_priority = ["hi", "en"] if prefer_lang.startswith("hi") else ["en", "hi"]
+
+    ydl_opts = {
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": lang_priority,
+        "subtitlesformat": "vtt",
+        "quiet": True,
+        "no_warnings": True,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            )
+        },
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(youtube_url, download=False)
+        except Exception as e:
+            raise RuntimeError(f"yt-dlp could not fetch video info: {e}")
+
+        # Try manual subtitles first, then auto-generated captions
+        for sub_source in ["subtitles", "automatic_captions"]:
+            subtitles = info.get(sub_source) or {}
+            for lang in lang_priority:
+                if lang in subtitles:
+                    for fmt in subtitles[lang]:
+                        if fmt.get("ext") in ("vtt", "srv3", "srv2", "srv1", "json3"):
+                            try:
+                                r = requests.get(fmt["url"], timeout=20)
+                                r.raise_for_status()
+                                transcript = clean_vtt(r.text)
+                                if len(transcript.strip()) > 100:
+                                    return transcript
+                            except Exception:
+                                continue
+
+    raise RuntimeError(
+        "No subtitles or captions found for this video. "
+        "The video may have captions disabled or restricted."
+    )
 
 
 def chunk_text(text: str, size: int, overlap: int) -> list[str]:
@@ -415,7 +450,13 @@ def chunk_text(text: str, size: int, overlap: int) -> list[str]:
 def load_website_text(page_url: str) -> str:
     r = requests.get(
         page_url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            )
+        },
         timeout=25,
     )
     r.raise_for_status()
@@ -427,24 +468,12 @@ def load_website_text(page_url: str) -> str:
         or soup.select_one("article")
         or soup.body
     )
-    text = main.get_text(separator="\n", strip=True) if main else soup.get_text(separator="\n", strip=True)
+    text = (
+        main.get_text(separator="\n", strip=True)
+        if main
+        else soup.get_text(separator="\n", strip=True)
+    )
     return text[:60000]
-
-
-def load_youtube_transcript(youtube_url: str, prefer_lang: str = "en") -> str:
-    vid = get_video_id(youtube_url)
-    languages = ["hi", "en"] if prefer_lang.lower().startswith("hi") else ["en", "hi"]
-
-    if hasattr(YouTubeTranscriptApi, "get_transcript"):
-        transcript = YouTubeTranscriptApi.get_transcript(vid, languages=languages)
-        return "\n".join([x.get("text", "") for x in transcript if x.get("text")]).strip()
-
-    api_obj = YouTubeTranscriptApi()
-    if hasattr(api_obj, "fetch"):
-        fetched = api_obj.fetch(vid, languages=languages)
-        return "\n".join([getattr(s, "text", "") for s in fetched if getattr(s, "text", "")]).strip()
-
-    raise RuntimeError("youtube-transcript-api: neither get_transcript nor fetch found.")
 
 
 def build_llm(groq_key: str) -> ChatGroq:
@@ -458,7 +487,7 @@ def summarize_chunks(llm, chunks: list[str], language: str, target_words: int) -
         input_variables=["text", "language", "words"],
         template=(
             "Summarize the text below in {words} words in {language}.\n"
-            "Rules: Do NOT add extra facts. Keep it clear.\n\n"
+            "Rules: Do NOT add extra facts. Keep it clear and concise.\n\n"
             "TEXT:\n{text}\n"
         ),
     )
@@ -468,8 +497,9 @@ def summarize_chunks(llm, chunks: list[str], language: str, target_words: int) -
             "Combine the following chunk summaries into ONE final coherent summary "
             "of about {words} words in {language}.\n"
             "Rules:\n"
-            "- Output ONLY in {language}.\n"
-            "- Do NOT add extra facts.\n\n"
+            "- Output ONLY in {language}. Do not mix languages.\n"
+            "- Do NOT add extra facts.\n"
+            "- Make it flow naturally as one piece.\n\n"
             "CHUNK SUMMARIES:\n{summaries}\n"
         ),
     )
@@ -480,15 +510,20 @@ def summarize_chunks(llm, chunks: list[str], language: str, target_words: int) -
 
     partials = []
     progress_bar = st.progress(0, text="Processing chunks…")
+
     for i, ch in enumerate(chunks, start=1):
         partial = map_chain.invoke({"text": ch, "language": language, "words": per_chunk_words})
         partials.append(partial.strip())
         pct = int(i / len(chunks) * 100)
-        progress_bar.progress(pct, text=f"Processing chunk {i}/{len(chunks)}…")
-    progress_bar.progress(100, text="Finalizing summary…")
+        progress_bar.progress(pct, text=f"Processing chunk {i} of {len(chunks)}…")
 
+    progress_bar.progress(100, text="Finalizing summary…")
     summaries_blob = "\n\n".join([f"• {p}" for p in partials if p])
-    return reduce_chain.invoke({"summaries": summaries_blob, "language": language, "words": target_words}).strip()
+    return reduce_chain.invoke({
+        "summaries": summaries_blob,
+        "language": language,
+        "words": target_words,
+    }).strip()
 
 
 # ─────────────────────────────────────────────
@@ -517,8 +552,13 @@ if run_btn:
                 source_type = "YouTube"
                 try:
                     text = load_youtube_transcript(url, prefer_lang=prefer_lang)
-                except (TranscriptsDisabled, NoTranscriptFound, CouldNotRetrieveTranscript):
-                    st.error("⚠️ This video has no captions/transcripts. Try a different video.")
+                except RuntimeError as e:
+                    st.error(f"⚠️ {e}")
+                    st.info(
+                        "💡 Tips: Make sure the video has captions enabled. "
+                        "Auto-generated captions also work. "
+                        "Try a different video if the issue persists."
+                    )
                     st.stop()
             else:
                 source_type = "Website"
@@ -536,7 +576,7 @@ if run_btn:
         with st.spinner("✨ Summarizing…"):
             final_summary = summarize_chunks(llm, chunks, language=out_lang, target_words=summary_words)
 
-        # ── Result ──
+        # ── Result Stats ──
         word_count = len(final_summary.split())
         char_count = len(text)
 
@@ -552,6 +592,7 @@ if run_btn:
             unsafe_allow_html=True,
         )
 
+        # ── Summary Box ──
         st.markdown(
             f'<div class="result-box">{final_summary}</div>',
             unsafe_allow_html=True,
