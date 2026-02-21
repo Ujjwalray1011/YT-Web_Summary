@@ -390,7 +390,8 @@ def load_website_text(page_url: str) -> str:
         if main
         else soup.get_text(separator="\n", strip=True)
     )
-    return text[:60000]
+    # Trim to 20k chars — enough for a great summary, avoids excessive chunks
+    return text[:20000]
 
 
 def build_llm(groq_key: str) -> ChatGroq:
@@ -398,8 +399,28 @@ def build_llm(groq_key: str) -> ChatGroq:
 
 
 def summarize_chunks(llm, chunks: list[str], language: str, target_words: int) -> str:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     parser = StrOutputParser()
 
+    # ── Fast path: single chunk fits in one call ──
+    if len(chunks) == 1:
+        stuff_prompt = PromptTemplate(
+            input_variables=["text", "language", "words"],
+            template=(
+                "Summarize the text below in about {words} words in {language}.\n"
+                "Rules: Do NOT add extra facts. Be clear, concise, and natural.\n\n"
+                "TEXT:\n{text}\n"
+            ),
+        )
+        progress_bar = st.progress(50, text="Summarizing…")
+        result = (stuff_prompt | llm | parser).invoke(
+            {"text": chunks[0], "language": language, "words": target_words}
+        ).strip()
+        progress_bar.progress(100, text="Done!")
+        return result
+
+    # ── Multi-chunk path: parallel map → reduce ──
     map_prompt = PromptTemplate(
         input_variables=["text", "language", "words"],
         template=(
@@ -425,22 +446,32 @@ def summarize_chunks(llm, chunks: list[str], language: str, target_words: int) -
     map_chain = map_prompt | llm | parser
     reduce_chain = reduce_prompt | llm | parser
 
-    partials = []
-    progress_bar = st.progress(0, text="Processing chunks…")
+    partials = [None] * len(chunks)
+    progress_bar = st.progress(0, text=f"Processing {len(chunks)} chunks in parallel…")
+    completed = 0
 
-    for i, ch in enumerate(chunks, start=1):
-        partial = map_chain.invoke({"text": ch, "language": language, "words": per_chunk_words})
-        partials.append(partial.strip())
-        pct = int(i / len(chunks) * 100)
-        progress_bar.progress(pct, text=f"Processing chunk {i} of {len(chunks)}…")
+    def process_chunk(idx, ch):
+        return idx, map_chain.invoke({"text": ch, "language": language, "words": per_chunk_words})
 
-    progress_bar.progress(100, text="Finalizing summary…")
+    # Run all map calls in parallel (Groq is fast, I/O bound — threads help a lot)
+    with ThreadPoolExecutor(max_workers=min(len(chunks), 6)) as executor:
+        futures = {executor.submit(process_chunk, i, ch): i for i, ch in enumerate(chunks)}
+        for future in as_completed(futures):
+            idx, partial = future.result()
+            partials[idx] = partial.strip()
+            completed += 1
+            pct = int(completed / len(chunks) * 90)
+            progress_bar.progress(pct, text=f"Processed {completed} of {len(chunks)} chunks…")
+
+    progress_bar.progress(95, text="Finalizing summary…")
     summaries_blob = "\n\n".join([f"• {p}" for p in partials if p])
-    return reduce_chain.invoke({
+    result = reduce_chain.invoke({
         "summaries": summaries_blob,
         "language": language,
         "words": target_words,
     }).strip()
+    progress_bar.progress(100, text="Done!")
+    return result
 
 
 # ─────────────────────────────────────────────
