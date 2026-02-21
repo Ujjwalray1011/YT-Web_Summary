@@ -399,28 +399,17 @@ def build_llm(groq_key: str) -> ChatGroq:
 
 
 def summarize_chunks(llm, chunks: list[str], language: str, target_words: int) -> str:
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
+    import time
     parser = StrOutputParser()
 
-    # ── Fast path: single chunk fits in one call ──
-    if len(chunks) == 1:
-        stuff_prompt = PromptTemplate(
-            input_variables=["text", "language", "words"],
-            template=(
-                "Summarize the text below in about {words} words in {language}.\n"
-                "Rules: Do NOT add extra facts. Be clear, concise, and natural.\n\n"
-                "TEXT:\n{text}\n"
-            ),
-        )
-        progress_bar = st.progress(50, text="Summarizing…")
-        result = (stuff_prompt | llm | parser).invoke(
-            {"text": chunks[0], "language": language, "words": target_words}
-        ).strip()
-        progress_bar.progress(100, text="Done!")
-        return result
-
-    # ── Multi-chunk path: parallel map → reduce ──
+    stuff_prompt = PromptTemplate(
+        input_variables=["text", "language", "words"],
+        template=(
+            "Summarize the text below in about {words} words in {language}.\n"
+            "Rules: Do NOT add extra facts. Be clear, concise, and natural.\n\n"
+            "TEXT:\n{text}\n"
+        ),
+    )
     map_prompt = PromptTemplate(
         input_variables=["text", "language", "words"],
         template=(
@@ -442,26 +431,48 @@ def summarize_chunks(llm, chunks: list[str], language: str, target_words: int) -
         ),
     )
 
+    # ── Fast path: single chunk → 1 LLM call ──
+    if len(chunks) == 1:
+        progress_bar = st.progress(50, text="Summarizing…")
+        result = (stuff_prompt | llm | parser).invoke(
+            {"text": chunks[0], "language": language, "words": target_words}
+        ).strip()
+        progress_bar.progress(100, text="Done!")
+        return result
+
+    # ── Multi-chunk: sequential with retry & backoff ──
     per_chunk_words = max(60, min(160, math.ceil(target_words / max(1, len(chunks)))))
     map_chain = map_prompt | llm | parser
     reduce_chain = reduce_prompt | llm | parser
 
-    partials = [None] * len(chunks)
-    progress_bar = st.progress(0, text=f"Processing {len(chunks)} chunks in parallel…")
-    completed = 0
+    partials = []
+    progress_bar = st.progress(0, text=f"Processing {len(chunks)} chunks…")
 
-    def process_chunk(idx, ch):
-        return idx, map_chain.invoke({"text": ch, "language": language, "words": per_chunk_words})
+    def invoke_with_retry(payload):
+        delay = 8
+        for attempt in range(5):
+            try:
+                return map_chain.invoke(payload)
+            except Exception as e:
+                err = str(e)
+                if ("429" in err or "rate_limit" in err.lower()) and attempt < 4:
+                    progress_bar.progress(
+                        int(len(partials) / len(chunks) * 90),
+                        text=f"Rate limit — retrying in {delay}s…"
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+                else:
+                    raise
 
-    # Run all map calls in parallel (Groq is fast, I/O bound — threads help a lot)
-    with ThreadPoolExecutor(max_workers=min(len(chunks), 6)) as executor:
-        futures = {executor.submit(process_chunk, i, ch): i for i, ch in enumerate(chunks)}
-        for future in as_completed(futures):
-            idx, partial = future.result()
-            partials[idx] = partial.strip()
-            completed += 1
-            pct = int(completed / len(chunks) * 90)
-            progress_bar.progress(pct, text=f"Processed {completed} of {len(chunks)} chunks…")
+    for i, ch in enumerate(chunks, start=1):
+        partial = invoke_with_retry({"text": ch, "language": language, "words": per_chunk_words})
+        partials.append(partial.strip())
+        pct = int(i / len(chunks) * 90)
+        progress_bar.progress(pct, text=f"Processed chunk {i} of {len(chunks)}…")
+        # Pause between chunks to respect free-tier TPM (6000 tokens/min)
+        if i < len(chunks):
+            time.sleep(4)
 
     progress_bar.progress(95, text="Finalizing summary…")
     summaries_blob = "\n\n".join([f"• {p}" for p in partials if p])
