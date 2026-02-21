@@ -1,5 +1,4 @@
 import os
-import re
 import math
 import validators
 import streamlit as st
@@ -7,8 +6,6 @@ from dotenv import load_dotenv
 
 import requests
 from bs4 import BeautifulSoup
-
-import yt_dlp
 
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
@@ -20,7 +17,7 @@ load_dotenv()
 # PAGE CONFIG & GLOBAL STYLES
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Ujjwalize — Smart Summarizer",
+    page_title="Ujjwalize — Web Summarizer",
     page_icon="🌟",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -262,20 +259,18 @@ with st.sidebar:
 
     st.markdown('<div class="sidebar-section">🔑 API Key</div>', unsafe_allow_html=True)
 
-    # Load key from Streamlit secrets or .env — never shown in UI by default
     _env_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
     if not _env_key:
         _env_key = os.getenv("GROQ_API_KEY", "")
 
     groq_api_key = st.text_input(
         "Groq API Key",
-        value="",                          # ← never pre-fill; keep field blank
+        value="",
         type="password",
         label_visibility="collapsed",
         placeholder="gsk_••••••••••••••••••••••",
     )
 
-    # Use env/secrets key silently if user left the field blank
     if not groq_api_key.strip():
         groq_api_key = _env_key
 
@@ -283,7 +278,7 @@ with st.sidebar:
     output_language = st.selectbox("Language", ["English", "Hindi"], index=0, label_visibility="collapsed")
 
     st.markdown('<div class="sidebar-section">📝 Summary Length</div>', unsafe_allow_html=True)
-    summary_words = st.slider("Words", 80, 500, 250, 10, label_visibility="collapsed")
+    summary_words = st.slider("Words", 80, 500, 300, 10, label_visibility="collapsed")
     st.caption(f"Target: **{summary_words} words**")
 
     st.markdown('<div class="sidebar-section">⚙️ Chunking</div>', unsafe_allow_html=True)
@@ -305,9 +300,9 @@ with st.sidebar:
 st.markdown(
     """
     <div class="hero">
-        <div class="hero-badge">🌟 AI-Powered Summarizer</div>
-        <h1>Enhance your reading with<br><span>Ujjwalize AI</span></h1>
-        <p>Paste any YouTube video or website URL and get a sharp, concise summary in seconds.</p>
+        <div class="hero-badge">🌐 AI-Powered Web Summarizer</div>
+        <h1>Summarize any<br><span>website instantly</span></h1>
+        <p>Paste any webpage URL and get a sharp, concise summary in seconds — powered by LLaMA 3.1.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -321,18 +316,18 @@ DEMO_URLS = {
     "🌐  GeeksForGeeks – Artificial Intelligence": "https://www.geeksforgeeks.org/artificial-intelligence/",
     "🌐  Wikipedia – Artificial Intelligence (EN)": "https://en.wikipedia.org/wiki/Artificial_intelligence",
     "🌐  Wikipedia – AI (Hindi)": "https://hi.wikipedia.org/wiki/कृत्रिम_बुद्धिमत्ता",
-    "▶️  TED Talk (YouTube)": "https://www.youtube.com/watch?v=arj7oStGLkU",
-    "▶️  3Blue1Brown – Neural Networks (YouTube)": "https://www.youtube.com/watch?v=aircAruvnKk",
+    "📰  BBC News – Technology": "https://www.bbc.com/news/technology",
+    "📰  TechCrunch – Latest News": "https://techcrunch.com/",
 }
 
 st.markdown('<div class="snap-label">Try a demo</div>', unsafe_allow_html=True)
 demo_choice = st.selectbox("Demo", list(DEMO_URLS.keys()), label_visibility="collapsed")
 
-st.markdown('<div class="snap-label" style="margin-top:1rem;">Paste your URL</div>', unsafe_allow_html=True)
+st.markdown('<div class="snap-label" style="margin-top:1rem;">Paste your website URL</div>', unsafe_allow_html=True)
 url = st.text_input(
     "URL",
     value=DEMO_URLS.get(demo_choice, ""),
-    placeholder="https://youtube.com/watch?v=... or https://example.com/article",
+    placeholder="https://example.com/article",
     label_visibility="collapsed",
 )
 
@@ -341,7 +336,7 @@ with col_btn:
     run_btn = st.button("🌟 Summarize", type="primary")
 with col_tip:
     st.markdown(
-        '<p class="tip-text">Static sites (Wikipedia, GFG) work best. '
+        '<p class="tip-text">Works best with Wikipedia, news articles, and blogs. '
         "JS-heavy pages may extract less content.</p>",
         unsafe_allow_html=True,
     )
@@ -349,94 +344,6 @@ with col_tip:
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
-def get_video_id(youtube_url: str) -> str:
-    youtube_url = youtube_url.strip()
-    for pattern in [
-        r"youtu\.be/([A-Za-z0-9_-]{6,})",
-        r"[?&]v=([A-Za-z0-9_-]{6,})",
-        r"youtube\.com/shorts/([A-Za-z0-9_-]{6,})",
-    ]:
-        m = re.search(pattern, youtube_url)
-        if m:
-            return m.group(1)
-    raise ValueError("Invalid YouTube URL — could not extract video id.")
-
-
-def clean_vtt(vtt_text: str) -> str:
-    """Strip VTT timestamps and HTML tags, return clean plain text."""
-    lines = vtt_text.splitlines()
-    cleaned = []
-    for line in lines:
-        line = line.strip()
-        # Skip blank lines, headers, timestamps, notes
-        if not line or line.startswith("WEBVTT") or "-->" in line or line.startswith("NOTE"):
-            continue
-        # Remove timestamp tags like <00:00:01.000>
-        line = re.sub(r"<\d+:\d+:\d+\.\d+>", "", line)
-        # Remove other HTML-style tags like <c>, </c>
-        line = re.sub(r"<[^>]+>", "", line).strip()
-        # Skip pure number lines (cue identifiers)
-        if re.fullmatch(r"\d+", line):
-            continue
-        # Deduplicate consecutive identical lines (very common in auto-captions)
-        if line and (not cleaned or cleaned[-1] != line):
-            cleaned.append(line)
-    return "\n".join(cleaned)
-
-
-def load_youtube_transcript(youtube_url: str, prefer_lang: str = "en") -> str:
-    """
-    Fetch YouTube transcript using yt-dlp.
-    Works reliably on cloud servers (Streamlit Cloud, Heroku, etc.)
-    unlike youtube-transcript-api which gets IP-blocked on cloud.
-    """
-    lang_priority = ["hi", "en"] if prefer_lang.startswith("hi") else ["en", "hi"]
-
-    ydl_opts = {
-        "skip_download": True,
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        "subtitleslangs": lang_priority,
-        "subtitlesformat": "vtt",
-        "quiet": True,
-        "no_warnings": True,
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            )
-        },
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info = ydl.extract_info(youtube_url, download=False)
-        except Exception as e:
-            raise RuntimeError(f"yt-dlp could not fetch video info: {e}")
-
-        # Try manual subtitles first, then auto-generated captions
-        for sub_source in ["subtitles", "automatic_captions"]:
-            subtitles = info.get(sub_source) or {}
-            for lang in lang_priority:
-                if lang in subtitles:
-                    for fmt in subtitles[lang]:
-                        if fmt.get("ext") in ("vtt", "srv3", "srv2", "srv1", "json3"):
-                            try:
-                                r = requests.get(fmt["url"], timeout=20)
-                                r.raise_for_status()
-                                transcript = clean_vtt(r.text)
-                                if len(transcript.strip()) > 100:
-                                    return transcript
-                            except Exception:
-                                continue
-
-    raise RuntimeError(
-        "No subtitles or captions found for this video. "
-        "The video may have captions disabled or restricted."
-    )
-
-
 def chunk_text(text: str, size: int, overlap: int) -> list[str]:
     text = (text or "").strip()
     if not text:
@@ -550,29 +457,19 @@ if run_btn:
         st.error("❌ That doesn't look like a valid URL. Double-check and try again.")
         st.stop()
 
+    # Block YouTube URLs
+    url_lower = url.lower()
+    if "youtube.com" in url_lower or "youtu.be" in url_lower:
+        st.error("⚠️ This app summarizes websites only. For YouTube videos, use the full Ujjwalize app.")
+        st.stop()
+
     out_lang = "Hindi" if output_language == "Hindi" else "English"
-    prefer_lang = "hi" if out_lang == "Hindi" else "en"
 
     try:
         llm = build_llm(groq_api_key)
 
-        with st.spinner("🔍 Fetching content…"):
-            url_lower = url.lower()
-            if "youtube.com" in url_lower or "youtu.be" in url_lower:
-                source_type = "YouTube"
-                try:
-                    text = load_youtube_transcript(url, prefer_lang=prefer_lang)
-                except RuntimeError as e:
-                    st.error(f"⚠️ {e}")
-                    st.info(
-                        "💡 Tips: Make sure the video has captions enabled. "
-                        "Auto-generated captions also work. "
-                        "Try a different video if the issue persists."
-                    )
-                    st.stop()
-            else:
-                source_type = "Website"
-                text = load_website_text(url)
+        with st.spinner("🔍 Fetching website content…"):
+            text = load_website_text(url)
 
         if not text or len(text.strip()) < 120:
             st.error("⚠️ Not enough readable text found. Try a different URL.")
@@ -593,7 +490,7 @@ if run_btn:
         st.markdown(
             f"""
             <div class="stat-row">
-                <div class="stat-pill">📄 Source: <strong>{source_type}</strong></div>
+                <div class="stat-pill">📄 Source: <strong>Website</strong></div>
                 <div class="stat-pill">🔢 Chunks: <strong>{len(chunks)}</strong></div>
                 <div class="stat-pill">📏 Input: <strong>{char_count:,} chars</strong></div>
                 <div class="stat-pill">📝 Output: <strong>~{word_count} words</strong></div>
@@ -611,7 +508,7 @@ if run_btn:
         st.download_button(
             "⬇️ Download Summary",
             data=final_summary,
-            file_name="ujjwalize_summary.txt",
+            file_name="ujjwalize_web_summary.txt",
             mime="text/plain",
         )
 
